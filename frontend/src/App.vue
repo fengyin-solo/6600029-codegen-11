@@ -3,6 +3,7 @@ import { onMounted } from 'vue';
 import MapView from './components/MapView.vue';
 import TerrainProfile from './components/TerrainProfile.vue';
 import FlightStats from './components/FlightStats.vue';
+import DroneFleet from './components/DroneFleet.vue';
 import { useDroneStore } from './store/drone';
 
 const store = useDroneStore();
@@ -116,6 +117,55 @@ function handlePlanRoute() {
             🗑 清除航线
           </button>
         </div>
+
+        <!-- Multi-drone collaborative inspection -->
+        <div class="bg-slate-800 rounded-lg p-3 space-y-2">
+          <h3 class="text-xs font-semibold text-slate-300 mb-1">多机协同巡检</h3>
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] text-slate-400">无人机数量</span>
+            <div class="flex items-center gap-2">
+              <button
+                @click="store.setDroneCount(store.droneCount - 1)"
+                :disabled="store.droneCount <= 2"
+                class="w-6 h-6 rounded bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
+              >
+                −
+              </button>
+              <span class="text-sm font-bold text-sky-400 w-4 text-center">{{ store.droneCount }}</span>
+              <button
+                @click="store.setDroneCount(store.droneCount + 1)"
+                :disabled="store.droneCount >= 6"
+                class="w-6 h-6 rounded bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
+              >
+                +
+              </button>
+            </div>
+          </div>
+          <button
+            @click="store.splitRouteAmongDrones()"
+            :disabled="store.waypoints.length < 2"
+            class="w-full py-2 rounded text-xs font-medium bg-cyan-700 text-white hover:bg-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            ✂ 拆分航线到多机
+          </button>
+          <button
+            @click="store.simulateMultiDroneFlight()"
+            :disabled="store.droneFleet.length === 0 || store.isMultiSimulating"
+            class="w-full py-2 rounded text-xs font-medium bg-teal-700 text-white hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            {{ store.isMultiSimulating ? '协同巡检中...' : '▶ 多机模拟' }}
+          </button>
+          <button
+            @click="store.clearFleet()"
+            :disabled="store.droneFleet.length === 0"
+            class="w-full py-2 rounded text-xs font-medium bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            清除协同
+          </button>
+        </div>
+
+        <!-- Drone fleet & payloads -->
+        <DroneFleet />
 
         <!-- Flight stats -->
         <FlightStats />

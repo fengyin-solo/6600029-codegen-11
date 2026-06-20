@@ -11,6 +11,8 @@ let waypointLayer: L.LayerGroup | null = null;
 let routeLayer: L.Polyline | null = null;
 let zoneLayer: L.LayerGroup | null = null;
 let droneMarker: L.CircleMarker | null = null;
+let fleetLayer: L.LayerGroup | null = null;
+const multiMarkers: Record<string, L.CircleMarker> = {};
 
 const addMode = ref(false);
 
@@ -24,6 +26,7 @@ function initMap() {
 
   waypointLayer = L.layerGroup().addTo(map);
   zoneLayer = L.layerGroup().addTo(map);
+  fleetLayer = L.layerGroup().addTo(map);
 
   map.on('click', (e: L.LeafletMouseEvent) => {
     if (addMode.value) {
@@ -109,6 +112,13 @@ function drawRoute() {
 }
 
 function drawSimDrone() {
+  if (store.droneFleet.length > 0) {
+    if (droneMarker && map) {
+      map.removeLayer(droneMarker);
+      droneMarker = null;
+    }
+    return;
+  }
   if (!map || store.waypoints.length < 2) return;
   const progress = store.simProgress / 100;
   const totalWp = store.waypoints.length;
@@ -132,6 +142,88 @@ function drawSimDrone() {
   }
 }
 
+function drawFleet() {
+  if (!fleetLayer) return;
+  fleetLayer.clearLayers();
+  for (const id in multiMarkers) {
+    if (map) map.removeLayer(multiMarkers[id]);
+    delete multiMarkers[id];
+  }
+  if (!map) return;
+
+  store.droneFleet.forEach((drone) => {
+    const latlngs = drone.waypoints.map((w) => [w.lat, w.lng] as [number, number]);
+    if (latlngs.length < 2) return;
+
+    L.polyline(latlngs, {
+      color: drone.color,
+      weight: 4,
+      opacity: 0.85,
+    })
+      .bindTooltip(`${drone.name} · ${drone.payload.icon}${drone.payload.name}`, {
+        sticky: true,
+        className: 'wp-tooltip',
+      })
+      .addTo(fleetLayer!);
+
+    const first = drone.waypoints[0];
+    const last = drone.waypoints[drone.waypoints.length - 1];
+
+    L.circleMarker([first.lat, first.lng], {
+      radius: 6,
+      color: '#ffffff',
+      fillColor: drone.color,
+      fillOpacity: 1,
+      weight: 2,
+    })
+      .bindTooltip(`${drone.name} · 起点`, { direction: 'top', className: 'wp-tooltip' })
+      .addTo(fleetLayer!);
+
+    L.circleMarker([last.lat, last.lng], {
+      radius: 6,
+      color: drone.color,
+      fillColor: '#0f172a',
+      fillOpacity: 1,
+      weight: 2,
+    })
+      .bindTooltip(`${drone.name} · 终点`, { direction: 'top', className: 'wp-tooltip' })
+      .addTo(fleetLayer!);
+  });
+}
+
+function drawMultiSim() {
+  if (!map) return;
+  store.droneFleet.forEach((drone, i) => {
+    const wps = drone.waypoints;
+    if (wps.length < 2) return;
+    const progress = (store.multiSimProgress[i] ?? 0) / 100;
+    const segIdx = Math.min(Math.floor(progress * (wps.length - 1)), wps.length - 2);
+    const segProgress = progress * (wps.length - 1) - segIdx;
+    const wp1 = wps[segIdx];
+    const wp2 = wps[segIdx + 1];
+    const lat = wp1.lat + (wp2.lat - wp1.lat) * segProgress;
+    const lng = wp1.lng + (wp2.lng - wp1.lng) * segProgress;
+
+    const existing = multiMarkers[drone.id];
+    if (existing) {
+      existing.setLatLng([lat, lng]);
+    } else {
+      multiMarkers[drone.id] = L.circleMarker([lat, lng], {
+        radius: 9,
+        color: '#ffffff',
+        fillColor: drone.color,
+        fillOpacity: 1,
+        weight: 2,
+      })
+        .bindTooltip(`${drone.name} · ${drone.payload.icon}${drone.payload.name}`, {
+          direction: 'top',
+          className: 'wp-tooltip',
+        })
+        .addTo(map!);
+    }
+  });
+}
+
 watch(() => store.waypoints.length, () => {
   drawWaypoints();
   drawRoute();
@@ -139,6 +231,11 @@ watch(() => store.waypoints.length, () => {
 
 watch(() => store.noFlyZones.length, drawNoFlyZones);
 watch(() => store.simProgress, drawSimDrone);
+watch(() => store.droneFleet, () => {
+  drawFleet();
+  drawSimDrone();
+}, { deep: true });
+watch(() => store.multiSimProgress, drawMultiSim, { deep: true });
 
 onMounted(() => {
   nextTick(initMap);

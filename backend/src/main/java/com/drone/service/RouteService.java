@@ -1,5 +1,7 @@
 package com.drone.service;
 
+import com.drone.model.DroneUnit;
+import com.drone.model.Payload;
 import com.drone.model.Waypoint;
 import org.springframework.stereotype.Service;
 
@@ -181,5 +183,171 @@ public class RouteService {
         }
         sb.append("  </Document>\n</kml>");
         return sb.toString();
+    }
+
+    // ─── Multi-Drone Collaborative Inspection ──────────────────────────────────
+
+    private static final String[] DRONE_COLORS = {
+        "#38bdf8",
+        "#f472b6",
+        "#34d399",
+        "#fbbf24",
+        "#a78bfa",
+        "#fb7185"
+    };
+
+    private static final List<Payload> PAYLOADS = Arrays.asList(
+        new Payload("visible", "可见光相机", "📷", "#38bdf8", "高清可见光成像"),
+        new Payload("infrared", "红外热成像", "🌡", "#f472b6", "热源异常检测"),
+        new Payload("lidar", "激光雷达", "📡", "#34d399", "三维点云建模"),
+        new Payload("multispectral", "多光谱相机", "🌈", "#fbbf24", "植被/地质分析"),
+        new Payload("zoom", "高清变焦", "🔍", "#a78bfa", "远距细节侦察")
+    );
+
+    public Map<String, Object> calculateFlightStats(List<Waypoint> waypoints) {
+        double totalDistance = 0;
+        for (int i = 1; i < waypoints.size(); i++) {
+            totalDistance += haversine(
+                waypoints.get(i - 1).getLat(), waypoints.get(i - 1).getLng(),
+                waypoints.get(i).getLat(), waypoints.get(i).getLng()
+            );
+        }
+
+        double avgSpeed = 0;
+        for (Waypoint w : waypoints) {
+            avgSpeed += w.getSpeed();
+        }
+        avgSpeed = avgSpeed / (waypoints.isEmpty() ? 1 : waypoints.size());
+
+        double estimatedTime = totalDistance / (avgSpeed > 0 ? avgSpeed : 1);
+        double flightMinutes = estimatedTime / 60;
+        double batteryCapacity = 5000;
+        double consumptionRate = 100;
+        double batteryUsage = Math.min(100, (flightMinutes * consumptionRate / batteryCapacity) * 100);
+
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalDistance", totalDistance);
+        stats.put("estimatedTime", estimatedTime);
+        stats.put("batteryUsage", batteryUsage);
+        return stats;
+    }
+
+    private Waypoint interpolate(Waypoint a, Waypoint b, double t, String tag) {
+        return new Waypoint(
+            "wp-split-" + tag,
+            a.getLat() + (b.getLat() - a.getLat()) * t,
+            a.getLng() + (b.getLng() - a.getLng()) * t,
+            a.getAltitude() + (b.getAltitude() - a.getAltitude()) * t,
+            a.getSpeed() + (b.getSpeed() - a.getSpeed()) * t,
+            a.getAction()
+        );
+    }
+
+    public List<List<Waypoint>> splitPathByDistance(List<Waypoint> waypoints, int count) {
+        if (waypoints.size() < 2 || count < 1) return new ArrayList<>();
+        if (count == 1) {
+            List<List<Waypoint>> result = new ArrayList<>();
+            result.add(new ArrayList<>(waypoints));
+            return result;
+        }
+
+        List<Double> cum = new ArrayList<>();
+        cum.add(0.0);
+        for (int i = 1; i < waypoints.size(); i++) {
+            cum.add(cum.get(i - 1) + haversine(
+                waypoints.get(i - 1).getLat(), waypoints.get(i - 1).getLng(),
+                waypoints.get(i).getLat(), waypoints.get(i).getLng()
+            ));
+        }
+
+        double total = cum.get(cum.size() - 1);
+        if (total <= 0) {
+            List<List<Waypoint>> result = new ArrayList<>();
+            result.add(new ArrayList<>(waypoints));
+            return result;
+        }
+
+        double segLen = total / count;
+
+        List<List<Waypoint>> segments = new ArrayList<>();
+        for (int s = 0; s < count; s++) {
+            double startDist = s * segLen;
+            double endDist = (s + 1) * segLen;
+            Waypoint startPt = pointAtDistance(waypoints, cum, startDist, "start-" + s);
+            Waypoint endPt = pointAtDistance(waypoints, cum, endDist, "end-" + s);
+
+            List<Waypoint> inner = new ArrayList<>();
+            for (int i = 0; i < waypoints.size(); i++) {
+                if (cum.get(i) > startDist + 1e-6 && cum.get(i) < endDist - 1e-6) {
+                    inner.add(waypoints.get(i));
+                }
+            }
+
+            List<Waypoint> segment = new ArrayList<>();
+            segment.add(startPt);
+            segment.addAll(inner);
+            segment.add(endPt);
+            segments.add(segment);
+        }
+
+        return segments;
+    }
+
+    private Waypoint pointAtDistance(List<Waypoint> waypoints, List<Double> cum, double dist, String tag) {
+        for (int i = 1; i < cum.size(); i++) {
+            if (cum.get(i) >= dist) {
+                Waypoint a = waypoints.get(i - 1);
+                Waypoint b = waypoints.get(i);
+                double segDist = cum.get(i) - cum.get(i - 1);
+                if (segDist == 0) segDist = 1;
+                double t = Math.max(0, Math.min(1, (dist - cum.get(i - 1)) / segDist));
+                return interpolate(a, b, t, tag + "-d" + i + "-" + Math.round(dist));
+            }
+        }
+        return waypoints.get(waypoints.size() - 1);
+    }
+
+    public Map<String, Object> splitRouteAmongDrones(List<Waypoint> waypoints, int droneCount) {
+        int count = Math.max(2, Math.min(6, droneCount));
+        List<List<Waypoint>> segments = splitPathByDistance(waypoints, count);
+
+        List<DroneUnit> fleet = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            List<Waypoint> seg = segments.get(i);
+            Map<String, Object> stats = calculateFlightStats(seg);
+
+            DroneUnit drone = new DroneUnit();
+            drone.setId("drone-" + System.currentTimeMillis() + "-" + i);
+            drone.setName("巡检机 " + (i + 1));
+            drone.setColor(DRONE_COLORS[i % DRONE_COLORS.length]);
+            drone.setWaypoints(seg);
+            drone.setPayload(PAYLOADS.get(i % PAYLOADS.size()));
+            drone.setStats(new DroneUnit.DroneStats(
+                ((Number) stats.get("totalDistance")).doubleValue(),
+                ((Number) stats.get("estimatedTime")).doubleValue(),
+                ((Number) stats.get("batteryUsage")).doubleValue()
+            ));
+            fleet.add(drone);
+        }
+
+        double fleetTotalDistance = 0;
+        double fleetMaxTime = 0;
+        double fleetMaxBattery = 0;
+        for (DroneUnit d : fleet) {
+            fleetTotalDistance += d.getStats().getDistance();
+            fleetMaxTime = Math.max(fleetMaxTime, d.getStats().getEstimatedTime());
+            fleetMaxBattery = Math.max(fleetMaxBattery, d.getStats().getBatteryUsage());
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("fleet", fleet);
+        result.put("totalDistance", fleetTotalDistance);
+        result.put("maxTime", fleetMaxTime);
+        result.put("maxBattery", fleetMaxBattery);
+        return result;
+    }
+
+    public List<Payload> getAvailablePayloads() {
+        return PAYLOADS;
     }
 }

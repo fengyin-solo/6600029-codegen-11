@@ -1,4 +1,4 @@
-import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig } from '../types';
+import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig, Payload } from '../types';
 
 // ─── Haversine distance ─────────────────────────────────────────────────────
 export function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -286,6 +286,76 @@ export function calculateFlightStats(waypoints: Waypoint[], config: DroneConfig)
     estimatedTime,
     batteryUsage: Math.min(100, batteryUsage),
   };
+}
+
+// ─── Multi-Drone Collaborative Inspection ──────────────────────────────────
+export const DRONE_COLORS = [
+  '#38bdf8', // sky-400
+  '#f472b6', // pink-400
+  '#34d399', // emerald-400
+  '#fbbf24', // amber-400
+  '#a78bfa', // violet-400
+  '#fb7185', // rose-400
+];
+
+export const PAYLOADS: Payload[] = [
+  { type: 'visible', name: '可见光相机', icon: '📷', color: '#38bdf8', description: '高清可见光成像' },
+  { type: 'infrared', name: '红外热成像', icon: '🌡', color: '#f472b6', description: '热源异常检测' },
+  { type: 'lidar', name: '激光雷达', icon: '📡', color: '#34d399', description: '三维点云建模' },
+  { type: 'multispectral', name: '多光谱相机', icon: '🌈', color: '#fbbf24', description: '植被/地质分析' },
+  { type: 'zoom', name: '高清变焦', icon: '🔍', color: '#a78bfa', description: '远距细节侦察' },
+];
+
+export function splitPathByDistance(waypoints: Waypoint[], count: number): Waypoint[][] {
+  if (waypoints.length < 2 || count < 1) return [];
+  if (count === 1) return [[...waypoints]];
+
+  const cum: number[] = [0];
+  for (let i = 1; i < waypoints.length; i++) {
+    cum.push(cum[i - 1] + haversine(waypoints[i - 1].lat, waypoints[i - 1].lng, waypoints[i].lat, waypoints[i].lng));
+  }
+  const total = cum[cum.length - 1];
+  if (total <= 0) return [[...waypoints]];
+  const segLen = total / count;
+
+  const interpolate = (a: Waypoint, b: Waypoint, t: number, tag: string): Waypoint => ({
+    id: `wp-split-${tag}`,
+    lat: a.lat + (b.lat - a.lat) * t,
+    lng: a.lng + (b.lng - a.lng) * t,
+    altitude: a.altitude + (b.altitude - a.altitude) * t,
+    speed: a.speed + (b.speed - a.speed) * t,
+    action: a.action,
+  });
+
+  const pointAt = (dist: number): Waypoint => {
+    for (let i = 1; i < cum.length; i++) {
+      if (cum[i] >= dist) {
+        const a = waypoints[i - 1];
+        const b = waypoints[i];
+        const segDist = cum[i] - cum[i - 1] || 1;
+        const t = Math.max(0, Math.min(1, (dist - cum[i - 1]) / segDist));
+        return interpolate(a, b, t, `d${i}-${Math.round(dist)}`);
+      }
+    }
+    return waypoints[waypoints.length - 1];
+  };
+
+  const segments: Waypoint[][] = [];
+  for (let s = 0; s < count; s++) {
+    const startDist = s * segLen;
+    const endDist = (s + 1) * segLen;
+    const startPt = pointAt(startDist);
+    const endPt = pointAt(endDist);
+
+    const inner: Waypoint[] = [];
+    for (let i = 0; i < waypoints.length; i++) {
+      if (cum[i] > startDist + 1e-6 && cum[i] < endDist - 1e-6) {
+        inner.push(waypoints[i]);
+      }
+    }
+    segments.push([startPt, ...inner, endPt]);
+  }
+  return segments;
 }
 
 // ─── Terrain Collision Check ────────────────────────────────────────────────

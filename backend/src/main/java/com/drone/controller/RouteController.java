@@ -4,6 +4,7 @@ import com.drone.model.Waypoint;
 import com.drone.service.RouteService;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -59,5 +60,39 @@ public class RouteController {
 
         String kml = routeService.exportKML(waypoints, name);
         return Map.of("kml", kml);
+    }
+
+    @PostMapping("/route/split")
+    public Map<String, Object> splitRouteAmongDrones(@RequestBody Map<String, Object> request) {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> wpData = (List<Map<String, Object>>) request.get("waypoints");
+        int droneCount = ((Number) request.getOrDefault("droneCount", 3)).intValue();
+
+        List<Waypoint> waypoints = new ArrayList<>();
+        for (Map<String, Object> w : wpData) {
+            waypoints.add(new Waypoint(
+                (String) w.get("id"),
+                ((Number) w.get("lat")).doubleValue(),
+                ((Number) w.get("lng")).doubleValue(),
+                ((Number) w.get("altitude")).doubleValue(),
+                ((Number) w.get("speed")).doubleValue(),
+                (String) w.get("action")
+            ));
+        }
+
+        return routeService.splitRouteAmongDrones(waypoints, droneCount);
+    }
+
+    @GetMapping("/payloads")
+    public List<Map<String, Object>> getAvailablePayloads() {
+        return routeService.getAvailablePayloads().stream()
+            .map(p -> Map.of(
+                "type", (Object) p.getType(),
+                "name", p.getName(),
+                "icon", p.getIcon(),
+                "color", p.getColor(),
+                "description", p.getDescription()
+            ))
+            .toList();
     }
 }

@@ -37,3 +37,26 @@ export interface DroneConfig {
   consumptionRate: number;  // mAh/min
   safeDistance: number;     // meters from obstacles
 }
+
+export type PayloadType = 'visible' | 'infrared' | 'lidar' | 'multispectral' | 'zoom';
+
+export interface Payload {
+  type: PayloadType;
+  name: string;
+  icon: string;
+  color: string;
+  description: string;
+}
+
+export interface DroneUnit {
+  id: string;
+  name: string;
+  color: string;
+  waypoints: Waypoint[];
+  payload: Payload;
+  stats: {
+    distance: number;
+    estimatedTime: number;
+    batteryUsage: number;
+  };
+}

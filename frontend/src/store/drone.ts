@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig } from '../types';
+import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig, DroneUnit, PayloadType } from '../types';
 import {
   aStarPathfind,
   rrtPathfind,
@@ -10,6 +10,9 @@ import {
   exportKML,
   mockNoFlyZones,
   mockTerrainData,
+  splitPathByDistance,
+  DRONE_COLORS,
+  PAYLOADS,
 } from '../utils/pathfinding';
 
 export const useDroneStore = defineStore('drone', () => {
@@ -29,6 +32,13 @@ export const useDroneStore = defineStore('drone', () => {
     consumptionRate: 100,
     safeDistance: 30,
   });
+
+  const droneFleet = ref<DroneUnit[]>([]);
+  const droneCount = ref(3);
+  const isMultiDroneMode = ref(false);
+  const multiSimProgress = ref<number[]>([]);
+  const isMultiSimulating = ref(false);
+  let multiSimInterval: ReturnType<typeof setInterval> | null = null;
 
   // ─── Actions ──────────────────────────────────────────────────────────────
   function addWaypoint(
@@ -61,6 +71,7 @@ export const useDroneStore = defineStore('drone', () => {
     }
     const smoothed = smoothPath(raw);
     waypoints.value = smoothed;
+    clearFleet();
     updatePlan();
   }
 
@@ -68,6 +79,7 @@ export const useDroneStore = defineStore('drone', () => {
     waypoints.value = [];
     currentPlan.value = null;
     simProgress.value = 0;
+    clearFleet();
   }
 
   function updatePlan() {
@@ -94,6 +106,108 @@ export const useDroneStore = defineStore('drone', () => {
         simProgress.value = 100;
         isSimulating.value = false;
         if (simInterval) clearInterval(simInterval);
+      }
+    }, 50);
+  }
+
+  // ─── Multi-Drone Collaborative Inspection ────────────────────────────────
+  function setDroneCount(n: number) {
+    droneCount.value = Math.max(2, Math.min(6, Math.round(n)));
+  }
+
+  async function splitRouteAmongDrones(count?: number, useBackend = false) {
+    if (waypoints.value.length < 2) return;
+    const n = Math.max(2, Math.min(6, count ?? droneCount.value));
+    droneCount.value = n;
+
+    if (useBackend) {
+      try {
+        const response = await fetch('http://localhost:8080/api/route/split', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            waypoints: waypoints.value,
+            droneCount: n,
+          }),
+        });
+        const data = await response.json();
+        droneFleet.value = data.fleet as DroneUnit[];
+      } catch (e) {
+        console.warn('Backend unavailable, using local split algorithm', e);
+        const segments = splitPathByDistance(waypoints.value, n);
+        droneFleet.value = segments.map((seg, i) => {
+          const stats = calculateFlightStats(seg, droneConfig.value);
+          return {
+            id: `drone-${Date.now()}-${i}`,
+            name: `巡检机 ${i + 1}`,
+            color: DRONE_COLORS[i % DRONE_COLORS.length],
+            waypoints: seg,
+            payload: PAYLOADS[i % PAYLOADS.length],
+            stats: {
+              distance: stats.totalDistance,
+              estimatedTime: stats.estimatedTime,
+              batteryUsage: stats.batteryUsage,
+            },
+          } as DroneUnit;
+        });
+      }
+    } else {
+      const segments = splitPathByDistance(waypoints.value, n);
+      droneFleet.value = segments.map((seg, i) => {
+        const stats = calculateFlightStats(seg, droneConfig.value);
+        return {
+          id: `drone-${Date.now()}-${i}`,
+          name: `巡检机 ${i + 1}`,
+          color: DRONE_COLORS[i % DRONE_COLORS.length],
+          waypoints: seg,
+          payload: PAYLOADS[i % PAYLOADS.length],
+          stats: {
+            distance: stats.totalDistance,
+            estimatedTime: stats.estimatedTime,
+            batteryUsage: stats.batteryUsage,
+          },
+        } as DroneUnit;
+      });
+    }
+
+    isMultiDroneMode.value = true;
+    multiSimProgress.value = droneFleet.value.map(() => 0);
+  }
+
+  function clearFleet() {
+    droneFleet.value = [];
+    isMultiDroneMode.value = false;
+    multiSimProgress.value = [];
+    if (multiSimInterval) {
+      clearInterval(multiSimInterval);
+      multiSimInterval = null;
+    }
+    isMultiSimulating.value = false;
+  }
+
+  function assignPayload(droneId: string, type: PayloadType) {
+    const drone = droneFleet.value.find((d) => d.id === droneId);
+    if (!drone) return;
+    const payload = PAYLOADS.find((p) => p.type === type);
+    if (payload) drone.payload = payload;
+  }
+
+  function simulateMultiDroneFlight() {
+    if (droneFleet.value.length === 0) return;
+    multiSimProgress.value = droneFleet.value.map(() => 0);
+    if (multiSimInterval) clearInterval(multiSimInterval);
+    isMultiSimulating.value = true;
+    multiSimInterval = setInterval(() => {
+      let allDone = true;
+      multiSimProgress.value = multiSimProgress.value.map((p) => {
+        if (p >= 100) return 100;
+        allDone = false;
+        return Math.min(100, p + 1);
+      });
+      if (allDone && multiSimInterval) {
+        clearInterval(multiSimInterval);
+        multiSimInterval = null;
+        isMultiSimulating.value = false;
       }
     }, 50);
   }
@@ -146,6 +260,18 @@ export const useDroneStore = defineStore('drone', () => {
     });
   });
 
+  const fleetTotalDistance = computed(() =>
+    droneFleet.value.reduce((sum, d) => sum + d.stats.distance, 0)
+  );
+
+  const fleetMaxTime = computed(() =>
+    Math.max(0, ...droneFleet.value.map((d) => d.stats.estimatedTime))
+  );
+
+  const fleetMaxBattery = computed(() =>
+    Math.max(0, ...droneFleet.value.map((d) => d.stats.batteryUsage))
+  );
+
   return {
     waypoints,
     noFlyZones,
@@ -160,6 +286,14 @@ export const useDroneStore = defineStore('drone', () => {
     estimatedTime,
     batteryPercent,
     terrainProfile,
+    droneFleet,
+    droneCount,
+    isMultiDroneMode,
+    multiSimProgress,
+    isMultiSimulating,
+    fleetTotalDistance,
+    fleetMaxTime,
+    fleetMaxBattery,
     addWaypoint,
     removeWaypoint,
     updateWaypoint,
@@ -169,5 +303,10 @@ export const useDroneStore = defineStore('drone', () => {
     loadMockData,
     exportPlan,
     updatePlan,
+    setDroneCount,
+    splitRouteAmongDrones,
+    clearFleet,
+    assignPayload,
+    simulateMultiDroneFlight,
   };
 });
